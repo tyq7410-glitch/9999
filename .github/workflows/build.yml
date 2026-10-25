@@ -1,0 +1,57 @@
+name: build
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fix folder layout
+        shell: bash
+        run: |
+          J=src/main/java/dev/auroravisuals
+          R=src/main/resources
+          mkdir -p "$J" "$R/assets/auroravisuals/lang"
+          find . -name '*.java' -not -path './.git/*' -not -path './build/*' | while read -r f; do
+            [ "$f" -ef "$J/$(basename "$f")" ] || cp -n "$f" "$J/"
+          done
+          [ -f "$R/fabric.mod.json" ] || cp "$(find . -name fabric.mod.json -not -path './.git/*' -not -path './build/*' | head -1)" "$R/"
+          [ -f "$R/assets/auroravisuals/lang/en_us.json" ] || cp "$(find . -name en_us.json -not -path './.git/*' -not -path './build/*' | head -1)" "$R/assets/auroravisuals/lang/"
+          test "$(ls $J/*.java | wc -l)" -gt 0 || { echo "NO JAVA FILES FOUND"; exit 1; }
+          { echo '## Repository files'; echo '```'; find . -type f -not -path './.git/*' | sort; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 9.2.0
+      - name: Build
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle build --no-daemon --stacktrace 2>&1 | tee build.log
+      - name: Check jar
+        shell: bash
+        run: |
+          JAR=$(ls build/libs/*.jar | grep -v sources | head -1)
+          N=$(unzip -l "$JAR" | grep -c '\.class' || true)
+          { echo '## Jar check'; echo "$JAR: $(stat -c%s "$JAR") bytes, $N classes"; } >> "$GITHUB_STEP_SUMMARY"
+          [ "$N" -gt 0 ] || { echo "JAR HAS NO CLASSES"; exit 1; }
+      - name: Show errors in summary
+        if: failure()
+        shell: bash
+        run: |
+          { echo '## Build errors (send this to Claude)'; echo '```'; grep -E "error:|What went wrong|Could not|FAILED|Caused by" -A4 build.log | head -80 || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aurora-visuals
+          path: |
+            build/libs/*.jar
+            !build/libs/*-sources.jar
